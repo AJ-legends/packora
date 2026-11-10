@@ -44,6 +44,33 @@ class HttpInfo:
 
 
 @dataclass(frozen=True)
+class TlsInfo:
+    """Metadata from a complete TLS ClientHello or ServerHello record."""
+
+    kind: str  # "client_hello" | "server_hello"
+    version: str
+    server_name: str | None = None
+
+
+@dataclass(frozen=True)
+class DhcpInfo:
+    """Safe DHCP metadata; no client identifiers or payload are retained."""
+
+    message_type: str
+    hostname: str | None = None
+    requested_ip: str | None = None
+
+
+@dataclass(frozen=True)
+class NtpInfo:
+    """Basic NTP header metadata for UDP/123 traffic."""
+
+    version: int
+    mode: str
+    stratum: int
+
+
+@dataclass(frozen=True)
 class TcpFlags:
     """Decoded TCP control-flag bits."""
 
@@ -99,6 +126,12 @@ class PacketInfo:
     payload_len: int = 0
     dns: DnsInfo | None = None
     http: HttpInfo | None = None
+    tls: TlsInfo | None = None
+    dhcp: DhcpInfo | None = None
+    ntp: NtpInfo | None = None
+    arp_sender_ip: str | None = None
+    arp_sender_mac: str | None = None
+    arp_target_ip: str | None = None
     # Exactly one of these is set for non-parsed packets (PRD F2.1):
     unsupported_protocol: str | None = None  # e.g. "unknown ethertype 0x8100"
     malformed_reason: str | None = None  # e.g. "truncated IPv4 header"
@@ -141,6 +174,14 @@ class PacketInfo:
                 parts.append(f"HTTP {self.http.method} {self.http.path} ({self.http.host})")
             else:
                 parts.append(f"HTTP {self.http.status_code}")
+        if self.tls is not None:
+            sni = f" SNI={self.tls.server_name}" if self.tls.server_name else ""
+            parts.append(f"TLS {self.tls.kind} {self.tls.version}{sni}")
+        if self.dhcp is not None:
+            hostname = f" host={self.dhcp.hostname}" if self.dhcp.hostname else ""
+            parts.append(f"DHCP {self.dhcp.message_type}{hostname}")
+        if self.ntp is not None:
+            parts.append(f"NTP {self.ntp.mode} v{self.ntp.version} stratum={self.ntp.stratum}")
         for note in self.notes:
             parts.append(f"note: {note}")
         return head + (" " + " ".join(parts) if parts else "")

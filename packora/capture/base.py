@@ -18,6 +18,8 @@ class Frame:
 
     ts: float
     raw: bytes
+    # Classic-PCAP DLT value. 1 = Ethernet; 12/101 are common raw-IP variants.
+    linktype: int = 1
 
     @property
     def wire_len(self) -> int:

@@ -3,9 +3,9 @@
 **Educational terminal packet analyzer — a "mini-Wireshark for the terminal."**
 
 Packora captures or replays network traffic, classifies every packet
-(`parsed` / `unsupported` / `malformed`), extracts DNS & HTTP metadata,
-reassembles TCP streams, and surfaces security detections (port scans,
-SYN floods, DNS anomalies) in a keyboard-driven Textual dashboard.
+(`parsed` / `unsupported` / `malformed`), extracts safe metadata from common
+network and application protocols, reassembles TCP streams, and surfaces
+explainable security detections in a keyboard-driven Textual dashboard.
 
 > **Authorized networks only.** Capturing traffic on networks you do not own or
 > operate may be illegal. Packora exists to teach, not to spy.
@@ -16,13 +16,16 @@ SYN floods, DNS anomalies) in a keyboard-driven Textual dashboard.
   privileges; live capture is a first-class mode but needs Npcap (Windows) or libpcap (Linux) plus elevated rights.
 - **Packet classification** — every frame resolves to exactly one of
   parsed / unsupported (protocol identifier reported) / malformed (layer + reason reported); a bad capture never stalls the run.
-- **Protocol metadata** — one-line per-packet summaries, DNS query/response pairing,
-  HTTP method/path/status per packet without waiting on stream reassembly.
+- **Protocol metadata** — Ethernet (including VLAN), ARP, IPv4/IPv6, TCP/UDP,
+  ICMP/ICMPv6, DNS, HTTP, TLS ClientHello/ServerHello, DHCPv4, and NTP.
+  Truncated headers and malformed variable-length options are contained and
+  labelled rather than crashing a run.
 - **TCP session reassembly** — conversations grouped bidirectionally, out-of-order
   segments sorted, retransmissions deduped, gaps shown as `...N bytes missing...`.
-- **Detections** — configurable sliding-window heuristics (default port-scan
-  threshold **10**) that correlate reverse SYN-ACK responses before alerting,
-  surfaced in an alerts panel.
+- **Detections** — explainable, cooldown-protected heuristics for unanswered
+  port scans and SYN floods, high-volume DNS, suspected DNS tunnelling, ARP
+  mapping conflicts, ICMP bursts, and highly periodic outbound flows. These are
+  investigation leads, not verdicts.
 - **Terminal dashboard** — live packet table with in-panel filtering, protocol mix
   bars, packets/sec rate, keyboard navigation, `?` help overlay, plain `--no-tui` mode.
 
@@ -62,6 +65,17 @@ packora --interface "<name>" --filter "tcp port 443" --count 500
 | `/` | focus filter box (Enter applies, Esc clears) |
 | `?` | help overlay |
 | `p` | sessions view → Enter opens the reassembled stream |
+
+## Replay output
+
+`--no-tui` renders an aligned six-column table (time, outcome, protocol,
+source, destination, details), followed by the protocol mix and alerts. This
+makes it practical to scan output directly or redirect it to a text file.
+
+For larger or real-world training captures, see
+[samples/EXTERNAL_CAPTURES.md](samples/EXTERNAL_CAPTURES.md). Downloaded PCAPs
+and exported reports are ignored by Git to avoid accidentally publishing
+traffic metadata.
 
 ## Architecture
 

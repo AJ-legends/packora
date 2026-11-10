@@ -29,7 +29,9 @@ q          quit (run summary follows)
 /          focus the live packet filter (updates as you type, Esc clears)
 ?          this help
 p          open the sessions view (TCP conversations)
-enter      (sessions view) open the reassembled stream[/table]
+enter      open selected packet detail or conversation stream
+/          search packet rows, sessions, or an open stream
+/          (stream view) search conversation text; Enter exits search[/table]
 
 The dashboard is designed for scanning: packet outcome is always shown first,
 the filter is always available, and the right side explains capture state,
@@ -67,21 +69,40 @@ class SessionsScreen(Screen):
         border: solid $accent;
         padding: 0 1;
     }
+    SessionsScreen #stream-search, SessionsScreen #stream-search-status {
+        display: none;
+    }
+    SessionsScreen #stream-search.visible, SessionsScreen #stream-search-status.visible {
+        display: block;
+    }
+    SessionsScreen #stream-search-status { padding: 0 1; color: $text-muted; }
+    SessionsScreen #session-search { margin: 0 0 1 0; }
+    PacketDetailScreen { align: center middle; }
+    PacketDetailScreen #packet-detail {
+        width: 90%; height: 85%; overflow: auto; border: solid $accent;
+        padding: 1 2; background: $surface;
+    }
     """
 
     BINDINGS = [
         ("q", "back", "Back"),
         ("escape", "back", "Back"),
+        ("slash", "search_stream", "Find"),
     ]
 
     def __init__(self, controller: Controller) -> None:
         super().__init__()
         self.controller = controller
+        self._stream_text = ""
+        self._session_search_text = ""
 
     def compose(self) -> ComposeResult:
         table: DataTable = DataTable(id="sessions")
         table.cursor_type = "row"
+        yield Input(placeholder="Filter conversations: endpoint, port, protocol...", id="session-search")
         yield table
+        yield Input(placeholder="Find text in this conversation...", id="stream-search")
+        yield Static("", id="stream-search-status")
         yield Static("", id="stream-view")
 
     # Sessions view (PRD F5.2): the table is focused by default; Enter reaches us
@@ -91,14 +112,11 @@ class SessionsScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#sessions", DataTable)
-        table.clear(columns=True)
-        table.add_columns("#", "proto", "client", "server", "pkts", "bytes", "gaps")
-        conversations = self.controller.sessions.ordered()
-        for row in render_conversation_table(conversations):
-            table.add_row(*[str(cell) for cell in row])
-        if not conversations:
-            table.add_row("", "-", "-", "-", "no conversations yet", "", "")
+        self._session_search = self.query_one("#session-search", Input)
+        self._render_sessions()
         stream_view = self.query_one("#stream-view", Static)
+        self._search = self.query_one("#stream-search", Input)
+        self._search_status = self.query_one("#stream-search-status", Static)
         stream_view.display = False
         table.focus()
 
@@ -107,17 +125,131 @@ class SessionsScreen(Screen):
         self._open_stream(table.cursor_row)
 
     def _open_stream(self, cursor_row: int | None) -> None:
-        conversations = self.controller.sessions.ordered()
+        conversations = self._filtered_conversations()
         if cursor_row is None or cursor_row >= len(conversations):
             return
         conv = conversations[cursor_row]
         stream_view = self.query_one("#stream-view", Static)
-        stream_view.update(conv.reassembled_view())
+        self._stream_text = conv.reassembled_view()
+        self._render_stream_search()
         self.query_one("#sessions", DataTable).display = False
         stream_view.display = True
 
+    def _filtered_conversations(self):
+        needle = self._session_search_text.lower()
+        conversations = self.controller.sessions.ordered()
+        if not needle:
+            return conversations
+        return [
+            conversation
+            for conversation in conversations
+            if needle
+            in " ".join(
+                (
+                    conversation.proto,
+                    f"{conversation.client[0]}:{conversation.client[1]}",
+                    f"{conversation.server[0]}:{conversation.server[1]}",
+                )
+            ).lower()
+        ]
+
+    def _render_sessions(self) -> None:
+        table = self.query_one("#sessions", DataTable)
+        table.clear(columns=True)
+        table.add_columns("#", "proto", "client", "server", "pkts", "bytes", "gaps")
+        conversations = self._filtered_conversations()
+        for row in render_conversation_table(conversations):
+            table.add_row(*[str(cell) for cell in row])
+        if not conversations:
+            message = "no conversations match filter" if self._session_search_text else "no conversations yet"
+            table.add_row("", "-", "-", "-", message, "", "")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.control.id == "session-search":
+            self._session_search_text = event.value.strip()
+            self._render_sessions()
+            return
+        if event.control.id == "stream-search":
+            self._render_stream_search()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.control.id == "session-search":
+            self.query_one("#sessions", DataTable).focus()
+            return
+        if event.control.id == "stream-search":
+            self._search.blur()
+
+    def action_search_stream(self) -> None:
+        """Focus a visible, non-destructive search field for the open stream."""
+        if not self._stream_text:
+            return
+        self._search.add_class("visible")
+        self._search_status.add_class("visible")
+        self._search.focus()
+
+    def _render_stream_search(self) -> None:
+        """Show matching stream lines live without mutating the reconstructed evidence."""
+        needle = self._search.value.strip().lower() if hasattr(self, "_search") else ""
+        stream_view = self.query_one("#stream-view", Static)
+        if not needle:
+            stream_view.update(self._stream_text)
+            if hasattr(self, "_search_status"):
+                self._search_status.update("Type to filter conversation lines. Enter returns to navigation.")
+            return
+        matching_lines = [line for line in self._stream_text.splitlines() if needle in line.lower()]
+        stream_view.update("\n".join(matching_lines) if matching_lines else "No matching conversation lines.")
+        self._search_status.update(f"{len(matching_lines)} matching line(s) for: {self._search.value}")
+
     def action_back(self) -> None:
         self.dismiss()
+
+
+class PacketDetailScreen(ModalScreen):
+    """Readable packet inspection without exposing raw capture-library objects."""
+
+    BINDINGS = [("q", "dismiss_screen", "Close"), ("escape", "dismiss_screen", "Close")]
+
+    def __init__(self, pkt: PacketInfo) -> None:
+        super().__init__()
+        self.pkt = pkt
+
+    def compose(self) -> ComposeResult:
+        yield Static(_packet_detail_text(self.pkt), id="packet-detail")
+
+    def action_dismiss_screen(self) -> None:
+        self.dismiss()
+
+
+def _packet_detail_text(pkt: PacketInfo) -> str:
+    """A scan-friendly field sheet for one packet."""
+    lines = [
+        "PACKET DETAIL",
+        "=" * 60,
+        f"time           {datetime.fromtimestamp(pkt.ts).isoformat(sep=' ', timespec='milliseconds')}",
+        f"outcome        {pkt.classification.value}",
+        f"wire length    {pkt.wire_len} bytes",
+        f"protocol       {pkt.proto_name or 'network'}",
+        f"source         {pkt._ip_port(pkt.src_ip, pkt.src_port)}",
+        f"destination    {pkt._ip_port(pkt.dst_ip, pkt.dst_port)}",
+    ]
+    if pkt.tcp_flags:
+        lines.append(f"TCP flags      {pkt.tcp_flags.as_str()}  seq={pkt.seq}")
+    if pkt.dns:
+        lines.append(f"DNS            {pkt.dns.qtype} {pkt.dns.name} ({'response' if pkt.dns.is_response else 'query'})")
+    if pkt.http:
+        lines.append(f"HTTP           {pkt.http.method or pkt.http.status_code} {pkt.http.path or pkt.http.host or ''}".rstrip())
+    if pkt.tls:
+        lines.append(f"TLS            {pkt.tls.kind} {pkt.tls.version} SNI={pkt.tls.server_name or '-'}")
+    if pkt.malformed_reason:
+        lines.append(f"decode issue   {pkt.malformed_reason}")
+    if pkt.unsupported_protocol:
+        lines.append(f"unsupported    {pkt.unsupported_protocol}")
+    if pkt.notes:
+        lines.extend(["", "NOTES", *[f"- {note}" for note in pkt.notes]])
+    if pkt.payload_preview:
+        lines.extend(["", f"HEX PREVIEW\n{pkt.payload_preview}"])
+    lines.extend(["", "q / Esc closes this inspector."])
+    return "\n".join(lines)
 
 
 def _bar_chart(mix: list[tuple[str, int]], total: int, width: int = 32) -> str:
@@ -164,6 +296,7 @@ class PackoraApp(App):
         self.controller = controller
         self._refresh_hz = refresh_hz
         self.filter_text = ""
+        self._visible_packets: list[PacketInfo] = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -227,6 +360,7 @@ class PackoraApp(App):
         except Exception:  # noqa: BLE001 - never let a repaint tick kill the UI
             return
         rows = []
+        self._visible_packets = []
         for pkt in reversed(recent[-MAX_REFRESH_ROWS:]):
             line = pkt.one_liner()
             if needle and needle not in line.lower():
@@ -241,12 +375,20 @@ class PackoraApp(App):
                     line,
                 )
             )
+            self._visible_packets.append(pkt)
         if not rows:
             empty = f"No packets match filter: {self.filter_text}" if needle else "Waiting for packets..."
             table.add_row("", "", "", "", "", empty)
             return
         for row in rows[:MAX_REFRESH_ROWS]:
             table.add_row(*row)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Open a field-level inspector for selected live-packet rows."""
+        if event.data_table.id != "packets":
+            return
+        if 0 <= event.cursor_row < len(self._visible_packets):
+            self.push_screen(PacketDetailScreen(self._visible_packets[event.cursor_row]))
 
     def action_show_filter(self) -> None:
         self._filter.focus()

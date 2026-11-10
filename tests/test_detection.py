@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from packora.analysis.analyzers.arp_spoof import ArpSpoofDetector
+from packora.analysis.analyzers.beaconing import BeaconingDetector
 from packora.analysis.analyzers.dns_anomaly import DnsAnomalyDetector
+from packora.analysis.analyzers.dns_tunnel import DnsTunnelDetector
+from packora.analysis.analyzers.icmp_flood import IcmpFloodDetector
 from packora.analysis.analyzers.port_scan import PortScanDetector
 from packora.analysis.analyzers.syn_flood import SynFloodDetector
 from packora.models.packet import Classification, DnsInfo, PacketInfo, TcpFlags
@@ -162,3 +166,59 @@ def test_dns_anomaly_alert() -> None:
         alerts.extend(detector.observe(pkt))
     assert len(alerts) == 1
     assert alerts[0].kind == "dns_anomaly"
+
+
+def test_dns_tunnel_heuristic_requires_long_distinct_labels() -> None:
+    detector = DnsTunnelDetector(threshold=3, min_label_length=10)
+    alerts = []
+    for index in range(3):
+        pkt = PacketInfo(
+            ts=float(index),
+            wire_len=90,
+            classification=Classification.PARSED,
+            src_ip=SCANNER,
+            ip_proto=17,
+            proto_name="DNS",
+            dns=DnsInfo(name=f"{index:010d}payload.example.test", qtype="A", is_response=False, answer_count=0),
+        )
+        alerts.extend(detector.observe(pkt))
+    assert len(alerts) == 1
+    assert alerts[0].kind == "dns_tunnel_suspected"
+
+
+def test_arp_conflicting_mapping_alerts_once() -> None:
+    detector = ArpSpoofDetector()
+    first = PacketInfo(ts=1.0, wire_len=42, classification=Classification.PARSED, arp_sender_ip="10.0.0.1", arp_sender_mac="00:11:22:33:44:55")
+    changed = PacketInfo(ts=2.0, wire_len=42, classification=Classification.PARSED, arp_sender_ip="10.0.0.1", arp_sender_mac="66:77:88:99:aa:bb")
+    assert detector.observe(first) == []
+    alerts = detector.observe(changed)
+    assert len(alerts) == 1
+    assert alerts[0].kind == "arp_mapping_conflict"
+
+
+def test_icmp_burst_alerts() -> None:
+    detector = IcmpFloodDetector(threshold=3)
+    alerts = []
+    for index in range(3):
+        alerts.extend(
+            detector.observe(
+                PacketInfo(
+                    ts=float(index), wire_len=42, classification=Classification.PARSED,
+                    src_ip=SCANNER, proto_name="ICMP", notes=["ICMP echo_request (type=8, code=0)"],
+                )
+            )
+        )
+    assert len(alerts) == 1
+    assert alerts[0].kind == "icmp_flood"
+
+
+def test_periodic_payloads_alert_but_irregular_traffic_does_not() -> None:
+    regular = BeaconingDetector(threshold=4)
+    alerts = []
+    for timestamp in (0.0, 10.0, 20.0, 30.0):
+        alerts.extend(regular.observe(PacketInfo(ts=timestamp, wire_len=80, classification=Classification.PARSED, src_ip=SCANNER, dst_ip=TARGET, src_port=50000, dst_port=443, ip_proto=6, payload_len=10)))
+    assert len(alerts) == 1
+    assert alerts[0].kind == "periodic_beaconing"
+    irregular = BeaconingDetector(threshold=4)
+    for timestamp in (0.0, 1.0, 25.0, 80.0):
+        assert irregular.observe(PacketInfo(ts=timestamp, wire_len=80, classification=Classification.PARSED, src_ip=SCANNER, dst_ip=TARGET, src_port=50000, dst_port=443, ip_proto=6, payload_len=10)) == []

@@ -27,6 +27,7 @@ class ReplayFeed:
         from scapy.all import PcapReader
 
         with PcapReader(self.path) as reader:
+            linktype = int(getattr(reader, "linktype", 1))
             previous_ts: float | None = None
             for pkt in reader:
                 ts = float(pkt.time)
@@ -35,4 +36,4 @@ class ReplayFeed:
                     if delay > 0:
                         time.sleep(delay)
                 previous_ts = ts
-                yield Frame(ts=ts, raw=bytes(pkt))
+                yield Frame(ts=ts, raw=bytes(pkt), linktype=linktype)

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from packora import reporting
 from packora.analysis.analyzers import default_analyzers
+from packora.analysis.analyzers.base import Alert, Analyzer
 from packora.analysis.controller import Controller
 from packora.capture.replay import ReplayFeed
 from packora.models.packet import Classification
@@ -46,6 +47,22 @@ def test_summary_uses_aggregate_counts_not_retained_rows(summary_state: Controll
     )
     assert "packets    : 501" in summary
     assert "  TCP" in summary and "501" in summary
+
+
+def test_alert_confidence_rises_with_independent_signals() -> None:
+    class TwoSignals(Analyzer):
+        def observe(self, pkt):  # type: ignore[no-untyped-def]
+            return [
+                Alert(pkt.ts, "first_signal", "10.0.0.5", "first evidence"),
+                Alert(pkt.ts, "second_signal", "10.0.0.5", "second evidence"),
+            ]
+
+    controller = Controller(ReplayFeed(str(demo_pcap_path())), analyzers=[TwoSignals()])
+    controller.process(next(ReplayFeed(str(demo_pcap_path())).frames()))
+    alerts = list(controller.alerts)
+    assert alerts[0].confidence == "medium"
+    assert alerts[1].confidence == "high"
+    assert alerts[1].related_signals == ("first_signal", "second_signal")
 
 
 def test_every_classification_reached(summary_state: Controller) -> None:
@@ -95,6 +112,16 @@ def test_stats_mix_populated(summary_state: Controller) -> None:
     assert mix.get("DNS", 0) >= 1
     assert mix.get("unsupported", 0) >= 1
     assert mix.get("malformed", 0) >= 1
+
+
+def test_stats_buckets_common_new_protocols() -> None:
+    from packora.analysis.stats import StatsTracker
+    from packora.models.packet import NtpInfo, PacketInfo
+
+    tracker = StatsTracker()
+    tracker.observe(PacketInfo(ts=1.0, wire_len=48, classification=Classification.PARSED, proto_name="NTP", ntp=NtpInfo(4, "client", 2)))
+    tracker.observe(PacketInfo(ts=2.0, wire_len=42, classification=Classification.PARSED, proto_name="ARP", arp_sender_ip="10.0.0.1"))
+    assert dict(tracker.mix()) == {"NTP": 1, "ARP": 1}
 
 
 def test_rate_and_snapshot_reportable(summary_state: Controller) -> None:

@@ -7,9 +7,9 @@ UI never joins this thread's work; callers drain shared state at their own pace
 from __future__ import annotations
 
 import threading
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from packora.analysis.analyzers.base import Alert, Analyzer
 from packora.analysis.sessions import SessionTracker
@@ -20,6 +20,7 @@ from packora.models.session import Conversation
 from packora.parsers import parse_frame
 
 BATCH_SIZE = 32
+EVIDENCE_WINDOW_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class Controller:
         self.max_packets = max_packets
         self._analyzers_finalized = False
         self._lock = threading.RLock()
+        self._alert_signals: defaultdict[str, deque[tuple[float, str]]] = defaultdict(deque)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -77,7 +79,7 @@ class Controller:
             created = False
             for analyzer in self.analyzers:
                 for alert in analyzer.observe(pkt):
-                    self.alerts.append(alert)
+                    self.alerts.append(self._score_alert(alert))
                     created = True
             return created
 
@@ -95,7 +97,20 @@ class Controller:
             self._analyzers_finalized = True
             for analyzer in self.analyzers:
                 for alert in analyzer.finalize(ts):
-                    self.alerts.append(alert)
+                    self.alerts.append(self._score_alert(alert))
+
+    def _score_alert(self, alert: Alert) -> Alert:
+        """Attach transparent confidence based on independent detector corroboration."""
+        signals = self._alert_signals[alert.src]
+        horizon = alert.ts - EVIDENCE_WINDOW_SECONDS
+        while signals and signals[0][0] < horizon:
+            signals.popleft()
+        signals.append((alert.ts, alert.kind))
+        related = tuple(sorted({kind for _, kind in signals}))
+        confidence = "high" if len(related) >= 2 else alert.confidence
+        if len(related) >= 3:
+            confidence = "critical"
+        return replace(alert, confidence=confidence, related_signals=related)
 
     def run(self, should_continue: Callable[[], bool] | None = None, replay_speed: float = 0.0) -> None:
         """Blocking consumption of `self.feed` — set up once, run inline or in a thread.

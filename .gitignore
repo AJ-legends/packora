@@ -17,3 +17,11 @@ coverage.xml
 
 # Local artifacts
 *.log
+run.json
+parser-output*.txt
+*-summary.json
+*-detection.json
+
+# Downloaded third-party captures can contain sensitive or malware-related traffic.
+# Keep the reproducible manifest in samples/EXTERNAL_CAPTURES.md instead.
+samples/external/

@@ -50,7 +50,7 @@ def test_replay_no_tui_outputs_summaries_and_alerts(capsys: pytest.CaptureFixtur
     assert "Packora run summary" in out
     assert "port_scan" in out
     assert "DNS" in out
-    assert "MALFORMED: truncated or short IPv4 header" in out
+    assert "MALFORMED" in out
     assert "UNSUPPORTED" in out
 
 

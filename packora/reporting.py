@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from packora.analysis.analyzers.base import Alert
+from packora.models.packet import Classification
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -15,11 +16,87 @@ if TYPE_CHECKING:
     from packora.models.packet import PacketInfo
 
 ALERT_MARK = "! ALERT"
+_TABLE_WIDTHS = (8, 11, 10, 23, 23, 46)
+
+
+def print_packet_table_header() -> None:
+    """Print a compact, dependency-free table for `--no-tui` replay/live output."""
+    _print_table_rule()
+    print(_format_table_row(("time", "outcome", "protocol", "source", "destination", "details")))
+    _print_table_rule()
+
+
+def print_packet_table_row(pkt: PacketInfo) -> None:
+    """Render a single neutral packet model as an aligned ASCII table row."""
+    timestamp = datetime.fromtimestamp(pkt.ts).strftime("%H:%M:%S")
+    protocol = pkt.proto_name or "NETWORK"
+    source = _endpoint(pkt.src_ip, pkt.src_port, pkt.src_mac)
+    destination = _endpoint(pkt.dst_ip, pkt.dst_port, pkt.dst_mac)
+    print(
+        _format_table_row(
+            (
+                timestamp,
+                pkt.classification.value.upper(),
+                protocol,
+                source,
+                destination,
+                _packet_detail(pkt),
+            )
+        )
+    )
+
+
+def print_packet_table_footer() -> None:
+    _print_table_rule()
+
+
+def _endpoint(ip: str | None, port: int | None, mac: str | None) -> str:
+    if ip:
+        return f"{ip}:{port}" if port is not None else ip
+    return mac or "-"
+
+
+def _packet_detail(pkt: PacketInfo) -> str:
+    if pkt.classification is Classification.MALFORMED:
+        return pkt.malformed_reason or "malformed packet"
+    if pkt.classification is Classification.UNSUPPORTED:
+        return pkt.unsupported_protocol or "unsupported protocol"
+    details: list[str] = []
+    if pkt.tcp_flags and pkt.tcp_flags.as_str() != "-":
+        details.append(f"flags={pkt.tcp_flags.as_str()}")
+    if pkt.dns:
+        details.append(f"{'response' if pkt.dns.is_response else 'query'} {pkt.dns.qtype} {pkt.dns.name}")
+    if pkt.http:
+        details.append(f"{pkt.http.method or pkt.http.status_code} {pkt.http.path or pkt.http.host or ''}".strip())
+    if pkt.tls:
+        details.append(f"{pkt.tls.kind} {pkt.tls.server_name or pkt.tls.version}")
+    if pkt.dhcp:
+        details.append(f"{pkt.dhcp.message_type} {pkt.dhcp.hostname or ''}".strip())
+    if pkt.ntp:
+        details.append(f"{pkt.ntp.mode} v{pkt.ntp.version}")
+    details.extend(pkt.notes[:1])
+    return "; ".join(details) or f"{pkt.payload_len} payload bytes"
+
+
+def _format_table_row(values: tuple[str, str, str, str, str, str]) -> str:
+    cells = [_truncate(value, width) for value, width in zip(values, _TABLE_WIDTHS, strict=True)]
+    return "| " + " | ".join(cell.ljust(width) for cell, width in zip(cells, _TABLE_WIDTHS, strict=True)) + " |"
+
+
+def _print_table_rule() -> None:
+    print("+-" + "-+-".join("-" * width for width in _TABLE_WIDTHS) + "-+")
+
+
+def _truncate(value: str, width: int) -> str:
+    return value if len(value) <= width else value[: width - 3] + "..."
 
 
 def print_alert_line(alert: Alert) -> None:
     timestamp = datetime.fromtimestamp(alert.ts).strftime("%H:%M:%S")
-    print(f"{ALERT_MARK} [{timestamp}] {alert.kind} src={alert.src} {alert.evidence}")
+    print(
+        f"{ALERT_MARK} [{timestamp}] [{alert.confidence.upper()}] "
+        f"{alert.kind} src={alert.src} {alert.evidence}"
+    )
 
 
 def run_summary_text(
@@ -60,7 +137,10 @@ def run_summary_text(
         lines += ["", f"Alerts ({len(alerts)})", "--------"]
         for one_alert in alerts:
             stamp = datetime.fromtimestamp(one_alert.ts).strftime("%H:%M:%S")
-            lines.append(f"  [{stamp}] {one_alert.kind} src={one_alert.src} {one_alert.evidence}")
+            lines.append(
+                f"  [{stamp}] [{one_alert.confidence.upper()}] {one_alert.kind} "
+                f"src={one_alert.src} {one_alert.evidence}"
+            )
     else:
         lines.append("Alerts     : none raised")
     return "\n".join(lines)
@@ -126,6 +206,26 @@ def json_packet(pkt: PacketInfo) -> dict:
             "status_code": pkt.http.status_code,
             "host": pkt.http.host,
         },
+        "tls": None if pkt.tls is None else {
+            "kind": pkt.tls.kind,
+            "version": pkt.tls.version,
+            "server_name": pkt.tls.server_name,
+        },
+        "dhcp": None if pkt.dhcp is None else {
+            "message_type": pkt.dhcp.message_type,
+            "hostname": pkt.dhcp.hostname,
+            "requested_ip": pkt.dhcp.requested_ip,
+        },
+        "ntp": None if pkt.ntp is None else {
+            "version": pkt.ntp.version,
+            "mode": pkt.ntp.mode,
+            "stratum": pkt.ntp.stratum,
+        },
+        "arp": None if pkt.arp_sender_ip is None else {
+            "sender_ip": pkt.arp_sender_ip,
+            "sender_mac": pkt.arp_sender_mac,
+            "target_ip": pkt.arp_target_ip,
+        },
     }
 
 
@@ -136,4 +236,6 @@ def json_alert(alert: Alert) -> dict:
         "src": alert.src,
         "evidence": alert.evidence,
         "recommendation": alert.recommendation,
+        "confidence": alert.confidence,
+        "related_signals": list(alert.related_signals),
     }

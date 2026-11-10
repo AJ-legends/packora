@@ -2,6 +2,24 @@
 
 from __future__ import annotations
 
-from packora.models.packet import Classification, DnsInfo, HttpInfo, PacketInfo, TcpFlags
+from packora.models.packet import (
+    Classification,
+    DhcpInfo,
+    DnsInfo,
+    HttpInfo,
+    NtpInfo,
+    PacketInfo,
+    TcpFlags,
+    TlsInfo,
+)
 
-__all__ = ["Classification", "DnsInfo", "HttpInfo", "PacketInfo", "TcpFlags"]
+__all__ = [
+    "Classification",
+    "DhcpInfo",
+    "DnsInfo",
+    "HttpInfo",
+    "NtpInfo",
+    "PacketInfo",
+    "TcpFlags",
+    "TlsInfo",
+]

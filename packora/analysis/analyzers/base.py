@@ -33,12 +33,14 @@ class Alert:
     src: str
     evidence: str
     recommendation: str = ""
+    confidence: str = "medium"
+    related_signals: tuple[str, ...] = ()
 
     def one_liner(self) -> str:
         from datetime import datetime
 
         stamp = datetime.fromtimestamp(self.ts).strftime("%H:%M:%S")
-        return f"{stamp} {self.kind} {self.src}: {self.evidence}"
+        return f"{stamp} [{self.confidence.upper()}] {self.kind} {self.src}: {self.evidence}"
 
 
 @dataclass

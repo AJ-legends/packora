@@ -7,6 +7,7 @@ from dataclasses import dataclass
 IPPROTO_ICMP = 1
 IPPROTO_TCP = 6
 IPPROTO_UDP = 17
+IPPROTO_ICMPV6 = 58
 
 IPPROTO_NAMES = {
     IPPROTO_ICMP: "ICMP",

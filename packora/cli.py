@@ -56,10 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--filter", metavar="BPF", help="BPF capture filter, e.g. \"tcp port 443\"")
     parser.add_argument("--count", type=int, metavar="N", help="stop after N packets")
     parser.add_argument("--no-tui", action="store_true", help="plain stdout output instead of the dashboard")
-    parser.add_argument("--no-detect", action="store_true", help="disable the analyzers (port scan, SYN flood, DNS)")
+    parser.add_argument("--no-detect", action="store_true", help="disable all traffic analyzers")
     parser.add_argument("--scan-threshold", type=int, default=10, metavar="N", help="port-scan threshold (default 10)")
     parser.add_argument("--flood-threshold", type=int, default=100, metavar="N", help="SYN-flood threshold (default 100)")
     parser.add_argument("--dns-threshold", type=int, default=100, metavar="N", help="DNS-anomaly threshold (default 100)")
+    parser.add_argument("--icmp-threshold", type=int, default=50, metavar="N", help="ICMP-flood threshold (default 50)")
+    parser.add_argument("--dns-tunnel-threshold", type=int, default=8, metavar="N", help="DNS-tunnel threshold (default 8)")
+    parser.add_argument("--beacon-threshold", type=int, default=6, metavar="N", help="periodic-beacon threshold (default 6)")
     parser.add_argument(
         "--export-summary", metavar="FILE.json", help="write a machine-readable run summary to this file"
     )
@@ -107,18 +110,22 @@ def _run_no_tui(feed: Any, args: argparse.Namespace) -> int:
         scan_threshold=args.scan_threshold,
         flood_threshold=args.flood_threshold,
         dns_threshold=args.dns_threshold,
+        icmp_threshold=args.icmp_threshold,
+        dns_tunnel_threshold=args.dns_tunnel_threshold,
+        beacon_threshold=args.beacon_threshold,
     )
     controller = Controller(feed, analyzers=analyzers)  # type: ignore[arg-type]
     seen_alerts = 0
     error: str | None = None
     last_ts: float | None = None
+    reporting.print_packet_table_header()
     try:
         for frame in feed.frames():  # type: ignore[attr-defined]
             if args.count and controller.total >= args.count:
                 break
             pkt = controller.process(frame)
             last_ts = frame.ts
-            print(pkt.one_liner())
+            reporting.print_packet_table_row(pkt)
             while len(controller.alerts) > seen_alerts:
                 reporting.print_alert_line(controller.alerts[seen_alerts])
                 seen_alerts += 1
@@ -128,6 +135,7 @@ def _run_no_tui(feed: Any, args: argparse.Namespace) -> int:
         error = str(exc)
         print(f"error: {error}", file=sys.stderr)
     finally:
+        reporting.print_packet_table_footer()
         controller.stop_thread()
         controller.finalize_analyzers(last_ts)
         # A failed feed ends iteration cleanly with a stored error (e.g. missing
@@ -177,6 +185,9 @@ def _run_tui(feed: Any, args: argparse.Namespace) -> int:
         scan_threshold=args.scan_threshold,
         flood_threshold=args.flood_threshold,
         dns_threshold=args.dns_threshold,
+        icmp_threshold=args.icmp_threshold,
+        dns_tunnel_threshold=args.dns_tunnel_threshold,
+        beacon_threshold=args.beacon_threshold,
     )
     controller = Controller(feed, analyzers=analyzers, max_packets=args.count)  # type: ignore[arg-type]
     app = PackoraApp(controller)  # type: ignore[arg-type]

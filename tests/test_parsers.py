@@ -13,7 +13,9 @@ from conftest import (
     dns_query_payload,
     eth_header,
     frame,
+    ipv4_header,
     tcp_frame,
+    tcp_header,
     udp_frame,
 )
 
@@ -87,16 +89,16 @@ def test_unsupported_ethertype_keeps_identifier() -> None:
     assert pkt.malformed_reason is None
 
 
-def test_ipv6_is_unsupported_not_malformed() -> None:
+def test_truncated_ipv6_is_malformed() -> None:
     pkt = parse_frame(frame(ip_payload=b"\x60" + b"\x00" * 19, ethertype=0x86DD))
-    assert pkt.classification is Classification.UNSUPPORTED
-    assert "IPv6" in (pkt.unsupported_protocol or "")
+    assert pkt.classification is Classification.MALFORMED
+    assert "IPv6" in (pkt.malformed_reason or "")
 
 
-def test_vlan_is_unsupported() -> None:
+def test_truncated_vlan_header_is_malformed() -> None:
     pkt = parse_frame(frame(b"x", ethertype=0x8100))
-    assert pkt.classification is Classification.UNSUPPORTED
-    assert "VLAN" in (pkt.unsupported_protocol or "")
+    assert pkt.classification is Classification.MALFORMED
+    assert "ethernet" in (pkt.malformed_reason or "")
 
 
 def test_malformed_truncated_ethernet() -> None:
@@ -138,11 +140,94 @@ def test_never_crashes_on_garbage() -> None:
     assert not pkt2.http and not pkt2.dns
 
 
-def test_unsupported_ip_protocol_is_not_malformed() -> None:
+def test_icmp_is_parsed_not_malformed() -> None:
     pkt = parse_frame(frame(ip_payload=b"\x08\x00\x00\x00\x00\x00frame-data", proto=1))
-    assert pkt.classification is Classification.UNSUPPORTED
+    assert pkt.classification is Classification.PARSED
     assert pkt.ip_proto == 1
-    assert "ICMP" in (pkt.unsupported_protocol or "")
+    assert pkt.proto_name == "ICMP"
+    assert any("echo_request" in note for note in pkt.notes)
+
+
+def test_arp_is_parsed() -> None:
+    arp = (
+        b"\x00\x01\x08\x00\x06\x04\x00\x01"
+        + bytes.fromhex("020000000001")
+        + bytes([10, 0, 0, 5])
+        + bytes(6)
+        + bytes([10, 0, 0, 1])
+    )
+    pkt = parse_frame(Frame(ts=1.0, raw=eth_header(ethertype=0x0806) + arp))
+    assert pkt.classification is Classification.PARSED
+    assert pkt.proto_name == "ARP"
+    assert pkt.arp_sender_ip == "10.0.0.5"
+
+
+def test_vlan_wrapped_ipv4_is_parsed() -> None:
+    tcp = tcp_header(40000, 80, 1)
+    vlan = (7).to_bytes(2, "big") + (0x0800).to_bytes(2, "big")
+    raw = eth_header(ethertype=0x8100) + vlan + ipv4_header(tcp) + tcp
+    pkt = parse_frame(Frame(ts=1.0, raw=raw))
+    assert pkt.classification is Classification.PARSED
+    assert pkt.proto_name == "TCP"
+    assert "VLAN 7" in pkt.notes
+
+
+def test_raw_ip_linktype_is_parsed_without_ethernet_header() -> None:
+    tcp = tcp_header(40000, 80, 1)
+    raw = ipv4_header(tcp) + tcp
+    pkt = parse_frame(Frame(ts=1.0, raw=raw, linktype=12))
+    assert pkt.classification is Classification.PARSED
+    assert pkt.proto_name == "TCP"
+    assert pkt.src_ip == "10.0.0.5"
+
+
+def test_ipv6_icmpv6_is_parsed() -> None:
+    payload = b"\x80\x00\x00\x00"  # echo request + unused checksum
+    header = bytes([0x60, 0, 0, 0]) + len(payload).to_bytes(2, "big") + bytes([58, 64])
+    header += bytes.fromhex("20010db8000000000000000000000001")
+    header += bytes.fromhex("20010db8000000000000000000000002")
+    pkt = parse_frame(Frame(ts=1.0, raw=eth_header(ethertype=0x86DD) + header + payload))
+    assert pkt.classification is Classification.PARSED
+    assert pkt.proto_name == "ICMPv6"
+
+
+def test_ntp_is_parsed() -> None:
+    ntp_payload = bytes([0x23, 2]) + bytes(46)  # v4 client, stratum 2
+    pkt = parse_frame(udp_frame(sport=123, dport=50000, payload=ntp_payload))
+    assert pkt.ntp is not None
+    assert pkt.ntp.mode == "client"
+    assert pkt.proto_name == "NTP"
+
+
+def test_dhcp_options_are_parsed_and_truncation_is_safe() -> None:
+    dhcp = bytes(236) + b"\x63\x82\x53\x63" + b"\x35\x01\x01\x0c\x04test\xff"
+    pkt = parse_frame(udp_frame(sport=68, dport=67, payload=dhcp))
+    assert pkt.dhcp is not None
+    assert pkt.dhcp.message_type == "discover"
+    assert pkt.dhcp.hostname == "test"
+    malformed = parse_frame(udp_frame(sport=68, dport=67, payload=dhcp[:-1] + b"\x0c\x08x"))
+    assert "malformed DHCP options" in malformed.notes
+
+
+def test_tls_client_hello_metadata_is_parsed() -> None:
+    server_name = b"example.test"
+    extension = b"\x00\x00" + (5 + len(server_name)).to_bytes(2, "big")
+    extension += (3 + len(server_name)).to_bytes(2, "big") + b"\x00" + len(server_name).to_bytes(2, "big") + server_name
+    body = b"\x03\x03" + bytes(32) + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00"
+    body += len(extension).to_bytes(2, "big") + extension
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    tls_record = b"\x16\x03\x03" + len(handshake).to_bytes(2, "big") + handshake
+    pkt = parse_frame(tcp_frame(dport=443, flags=PSH | ACK, payload=tls_record))
+    assert pkt.tls is not None
+    assert pkt.tls.server_name == "example.test"
+    assert pkt.proto_name == "TLS"
+
+
+def test_truncated_tcp_options_are_malformed() -> None:
+    raw = bytearray(tcp_frame().raw)
+    raw[46] = 0x60  # TCP data offset says 24 bytes while only 20 are present.
+    pkt = parse_frame(Frame(ts=1.0, raw=bytes(raw)))
+    assert pkt.classification is Classification.MALFORMED
 
 
 def test_parsed_ack_payload_fields() -> None:

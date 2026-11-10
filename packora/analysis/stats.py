@@ -18,6 +18,11 @@ class StatBucket(StrEnum):
     UDP = "UDP"
     DNS = "DNS"
     HTTP = "HTTP"
+    TLS = "TLS"
+    DHCP = "DHCP"
+    NTP = "NTP"
+    ARP = "ARP"
+    ICMP = "ICMP"
     OTHER_PARSED = "other"
     UNSUPPORTED = "unsupported"
     MALFORMED = "malformed"
@@ -47,6 +52,16 @@ class StatsTracker:
             return StatBucket.DNS
         if pkt.http is not None:
             return StatBucket.HTTP
+        if pkt.tls is not None:
+            return StatBucket.TLS
+        if pkt.dhcp is not None:
+            return StatBucket.DHCP
+        if pkt.ntp is not None:
+            return StatBucket.NTP
+        if pkt.arp_sender_ip is not None:
+            return StatBucket.ARP
+        if pkt.proto_name in {"ICMP", "ICMPv6"}:
+            return StatBucket.ICMP
         if pkt.ip_proto == 6:
             return StatBucket.TCP
         if pkt.ip_proto == 17:
